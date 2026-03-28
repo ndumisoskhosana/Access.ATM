@@ -69,16 +69,6 @@ The system uses a camera to interpret the ATM environment and provides <u>real-t
 
 ## 📚 **Libraries Used**
 
-### 🔹 Bullet Point Format
-- **opencv-python (cv2)** — Captures video from webcam and processes image frames  
-- **pyttsx3** — Converts text to speech for real-time audio guidance  
-- **SpeechRecognition** — Captures and processes user voice input  
-- **re** — Extracts information (e.g. Rand amounts) from OCR text  
-- **time** — Handles timing logic (e.g. ATM visibility timeout)  
-- **ultralytics (YOLOv8)** — Object detection for ATM components (screen, keypad, etc.)  
-- **azure-ai-vision-imageanalysis** — Performs OCR to read ATM screen text  
-- **azure-core** — Handles authentication and communication with Azure services  
-
 ---
 
 ### 📊 Table Format
