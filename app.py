@@ -75,7 +75,7 @@ def get_guidance_string(target_box, finger_x, finger_y):
 
     dx = target_cx - finger_x
     dy = target_cy - finger_y
-    threshold = 60 
+    threshold = 35
 
     if abs(dx) < threshold and abs(dy) < threshold: 
         return "Target locked. Push your finger straight forward to tap the glass."
@@ -106,60 +106,94 @@ def analyze_frame():
     instruction = ""
 
     # ==========================================
-    # GLOBAL INTENT RECOGNITION 
+    # GLOBAL INTENT & VOICE RECOGNITION 
     # ==========================================
     if requested_target:
         req = requested_target.lower()
         print(f"[VOICE INPUT] User said: '{req}'")
         
-        # ADDED "ready", "next", "continue" to wake the AI up from the PAUSED state
-        if any(word in req for word in ["what", "read", "screen", "options", "repeat", "help", "ready", "next", "continue"]):
+        # 1. THE NUCLEAR OVERRIDE: Catch numbers immediately, regardless of state!
+        matched_num = None
+        word_to_num = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
+        
+        for word, num in word_to_num.items():
+            if word in req:
+                matched_num = num
+                break
+                
+        if matched_num and matched_num in dynamic_menu:
+            target_box = dynamic_menu[matched_num]
+            instruction = f"Option {matched_num} selected. Show me your hand."
+            current_state = "GUIDING_HAND"
+            return jsonify({"instruction": instruction, "state": current_state}) 
+
+        # 2. STANDARD CONTEXT COMMANDS
+        elif any(word in req for word in ["what", "read", "screen", "options", "repeat", "help", "ready", "next", "continue"]):
             current_state = "READING_SCREEN"
-            print("[INFO] Global Intent: Waking up / Re-reading screen.")
         elif any(word in req for word in ["cancel", "stop", "back", "reset"]):
-            current_state = "READING_SCREEN"
+            # THE FIX: Force it into a PAUSE state and immediately return the audio. 
+            # This prevents it from instantly re-reading the screen and spamming the user.
+            current_state = "PAUSED"
             target_box = None
-            instruction = "Cancelling action. " 
+            instruction = "Assistant reset. If you need to cancel the bank transaction, please press the physical cancel button on the metal keypad. Find the raised bump on the number 5 to orient your hand. The cancel button is found in the top right corner of the keypad. Tap your phone and say 'Ready' when you want me to scan the screen again."
+            return jsonify({"instruction": instruction, "state": current_state}) # Returns immediately! 
         elif any(word in req for word in ["where", "keypad", "card", "cash", "slot", "physical"]):
             instruction = "The physical keypad is directly below the screen. Find the raised bump on the number 5 to orient your hand. The card slot is to the right of the keypad, and the cash dispenser is at the bottom of the machine. "
+            return jsonify({"instruction": instruction, "state": current_state})
 
     # ==========================================
-    # STATE 1: READ THE SCREEN & NUMBER OPTIONS
+    # STATE 1: READ THE SCREEN
     # ==========================================
     if current_state == "READING_SCREEN":
         boxes = get_text_bounding_boxes_from_azure(frame)
-        screen_text_combined = " ".join(boxes.keys())
         
-        if "welcome" in screen_text_combined or "insert card" in screen_text_combined:
-            instruction += "Welcome. To find the card slot, feel the area to the right of the physical keypad below the screen. Insert your card."
-        elif "enter pin" in screen_text_combined:
+        frame_height, frame_width, _ = frame.shape
+        valid_boxes = {}
+        for text, box in boxes.items():
+            if box[3] <= (frame_height * 0.75):
+                valid_boxes[text] = box
+                
+        screen_text_combined = " ".join(valid_boxes.keys())
+        
+        if any(phrase in screen_text_combined for phrase in ["card to begin", "awaiting card", "card insertion"]):
+            instruction += "Welcome to the Bank of the Future. To find the card slot, feel the area to the right of the physical keypad below the screen. Please insert your card to begin."
+            
+        elif "pin" in screen_text_combined and ("enter" in screen_text_combined or "type" in screen_text_combined):
             instruction += "Screen asks for PIN. Move your hand directly below the center of the screen to find the physical keypad. Find the raised bump on the number 5 to orient your hand, type your PIN, and press the green enter button."
-        
-        # --- THE FIX: CATCH SUCCESS SCREENS ---
+            
         elif any(word in screen_text_combined for word in ["take cash", "successful", "success", "complete", "thank you"]):
             instruction += "Transaction successful. Please take your card from the slot, and collect your cash or receipt from the dispensers below the keypad."
-            current_state = "PAUSED" # The journey is over! AI goes to sleep.
             
-        elif "insert cash" in screen_text_combined:
+        elif any(word in screen_text_combined for word in ["declined", "failed", "error", "incorrect", "invalid"]):
+            instruction += "An error or decline message is on the screen. To start over, tap your phone and say 'Cancel', or press the red physical cancel button on the keypad."
+            
+        elif "insert cash" in screen_text_combined or "insert notes" in screen_text_combined:
             instruction += "The cash deposit shutter is open. It is located below the keypad. Please insert your notes."
+            
         else:
             dynamic_menu.clear()
-            audio_options = "I see the following options: "
+            context_announcement = "" 
+            audio_options = "Options are: "
             counter = 1
             added_texts = [] 
             
-            sorted_texts = sorted(boxes.keys(), key=lambda k: boxes[k][1])
-            frame_height, frame_width, _ = frame.shape
+            sorted_texts = sorted(valid_boxes.keys(), key=lambda k: valid_boxes[k][1])
             
             for text in sorted_texts:
-                box = boxes[text]
+                box = valid_boxes[text]
                 box_height = box[3] - box[1] 
-                word_bottom_y = box[3]
-                
-                if word_bottom_y > (frame_height * 0.75):
-                    continue 
                 
                 clean_text = ''.join(e for e in text if e.isalnum() or e.isspace()).strip()
+                
+                silent_ignore = ["simulator", "session", "select", "proceed", "menu", "bank", "keypad", "clear", "enter", "cancel"]
+                if any(word in clean_text for word in silent_ignore) or clean_text.replace(" ", "").isdigit():
+                    continue 
+
+                context_phrases = ["current balance", "available balance", "user id", "welcome", "hello"]
+                if any(word in clean_text for word in context_phrases):
+                    if text not in context_announcement: 
+                        context_announcement += f"{text}. "
+                    continue 
                 
                 if len(clean_text.split()) <= 4 and len(clean_text) > 2 and box_height > 10: 
                     is_duplicate = False
@@ -175,31 +209,24 @@ def analyze_frame():
                         counter += 1
             
             if counter > 1:
-                instruction += audio_options + "Tap anywhere on the screen and say your number."
-                current_state = "AWAITING_CHOICE"
+                instruction += context_announcement + audio_options + "Tap anywhere and say your number."
+                current_state = "AWAITING_CHOICE" # THE FIX: Force the AI into a silent pause to wait for voice input!
+            elif context_announcement:
+                instruction += context_announcement + "Tap your phone and say 'Ready' to continue."
+                current_state = "PAUSED"
             else:
                 instruction += "Scanning screen..."
 
     # ==========================================
-    # STATE 2: WAIT FOR USER TO SAY A NUMBER
+    # STATE 2: THE MENU WAITING ROOM
     # ==========================================
     elif current_state == "AWAITING_CHOICE":
         if requested_target:
-            req = requested_target.lower()
-            matched_num = None
-            word_to_num = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
-            
-            for word, num in word_to_num.items():
-                if word in req:
-                    matched_num = num
-                    break
-            
-            if matched_num and matched_num in dynamic_menu:
-                target_box = dynamic_menu[matched_num]
-                instruction = f"Option {matched_num} selected. Show me your hand."
-                current_state = "GUIDING_HAND"
-            else:
-                instruction = "I didn't catch a valid number. You can say a number, or ask 'What are my options?'"
+            # If they spoke, but the "NUCLEAR OVERRIDE" at the top didn't catch a valid number
+            instruction = "I didn't catch a valid number. You can say a number, or ask 'What are my options?'"
+        else:
+            # Absolute silence. The AI waits patiently without running OCR again.
+            instruction = ""
 
     # ==========================================
     # STATE 3: MODERN MEDIAPIPE FINGERTIP TRACKING
@@ -217,24 +244,22 @@ def analyze_frame():
             
             h, w, _ = frame.shape
             finger_x = int(index_tip.x * w)
-            finger_y = int(index_tip.y * h)
+            finger_y = int(index_tip.y * h) - 50
 
         if finger_x > 0:
             instruction = get_guidance_string(target_box, finger_x, finger_y) 
             
-            # THE FIX: Drop into a PAUSED state to give the user time to tap and the ATM time to load.
             if instruction == "Target locked. Push your finger straight forward to tap the glass.":
                 instruction += " Once the next screen loads, tap your phone and say 'Ready'."
                 current_state = "PAUSED" 
                 target_box = None
         else:
             instruction = "Hand not visible. Please show your hand."
-
+            
     # ==========================================
     # STATE 4: THE COOL-DOWN PAUSE
     # ==========================================
     elif current_state == "PAUSED":
-        # The AI stays completely silent and does nothing until the Global Intent catches the word "Ready"
         instruction = ""
 
     return jsonify({"instruction": instruction, "state": current_state})

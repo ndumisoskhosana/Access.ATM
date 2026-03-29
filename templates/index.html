@@ -7,9 +7,30 @@
     <style>
         body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; text-align: center; height: 100vh; overflow: hidden; }
         video { width: 100vw; height: 80vh; object-fit: cover; }
-        #status { padding: 20px; font-size: 1.2rem; font-weight: bold; background: #222; height: 20vh; }
+        
+        /* Centered status text for better readability */
+        #status { padding: 20px; font-size: 1.2rem; font-weight: bold; background: #222; height: 20vh; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+        
         #tap-overlay { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.8); }
-        #start-btn { padding: 20px 40px; font-size: 1.5rem; background-color: #007bff; color: white; border: none; border-radius: 10px; }
+        
+        /* THE FIX: Massive, full-screen accessible button */
+        #start-btn { 
+            width: 100vw; 
+            height: 100vh; 
+            font-size: 3.5rem; 
+            font-weight: bold;
+            background-color: #0056b3; 
+            color: white; 
+            border: none; 
+            cursor: pointer;
+            margin: 0;
+            padding: 0;
+        }
+        
+        /* Slight color change when tapped so you know it registered */
+        #start-btn:active {
+            background-color: #004494; 
+        }
     </style>
 </head>
 <body>
@@ -18,7 +39,7 @@
     <canvas id="canvas" hidden></canvas>
     
     <div id="tap-overlay">
-        <button id="start-btn">TAP TO START</button>
+        <button id="start-btn">TAP ANYWHERE<br>TO START</button>
     </div>
     
     <div id="status" hidden>Initializing...</div>
@@ -38,7 +59,18 @@
 
         // --- 1. SMART AUDIO OUTPUT ---
         function speak(text, callback = null) {
-            if (text && text !== lastInstruction) {
+            
+            // THE FIX: Only trigger the radar kill-switch for exact directional blips!
+            const isGuidance = text === "Move right." || text === "Move left." || text === "Move up." || text === "Move down." || text.includes("Target locked");
+            
+            // Bypass the silence filter IF it is a guidance command
+            if (text && (text !== lastInstruction || isGuidance)) {
+                
+                // If it's a real-time direction, cut off the previous audio so it doesn't stutter!
+                if (isGuidance) {
+                    window.speechSynthesis.cancel(); 
+                }
+                
                 const utterance = new SpeechSynthesisUtterance(text);
                 utterance.rate = 1.1;
                 
@@ -84,7 +116,8 @@
         document.body.addEventListener('click', () => {
             if (cameraActive) {
                 overlay.style.display = 'flex';
-                overlay.innerHTML = '<h2 style="color:lime;">Listening... Speak now</h2>';
+                // Make the listening overlay also huge and full screen
+                overlay.innerHTML = '<div style="width: 100vw; height: 100vh; background: #0056b3; display: flex; align-items: center; justify-content: center;"><h1 style="color:white; font-size: 3rem; text-align: center;">Listening...<br>Speak now</h1></div>';
                 
                 // Let the AI say "Listening" BEFORE opening the mic so it doesn't hear itself
                 speak("Listening", () => {
