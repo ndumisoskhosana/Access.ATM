@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AccessATM Assistant</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; text-align: center; height: 100vh; overflow: hidden; }
+        video { width: 100vw; height: 80vh; object-fit: cover; }
+        #status { padding: 20px; font-size: 1.2rem; font-weight: bold; background: #222; height: 20vh; }
+        #tap-overlay { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.8); }
+        #start-btn { padding: 20px 40px; font-size: 1.5rem; background-color: #007bff; color: white; border: none; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+    <video id="video" autoplay playsinline hidden></video>
+    <canvas id="canvas" hidden></canvas>
+    
+    <div id="tap-overlay">
+        <button id="start-btn">TAP TO START</button>
+    </div>
+    
+    <div id="status" hidden>Initializing...</div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const overlay = document.getElementById('tap-overlay');
+        const startBtn = document.getElementById('start-btn');
+
+        let lastInstruction = "";
+        let isProcessing = false;
+        let cameraActive = false;
+        let voicePayload = ""; 
+
+        // --- 1. SMART AUDIO OUTPUT ---
+        function speak(text, callback = null) {
+            if (text && text !== lastInstruction) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.1;
+                
+                // If we pass a callback, run it AFTER the AI finishes speaking
+                if (callback) {
+                    utterance.onend = callback;
+                }
+                
+                window.speechSynthesis.speak(utterance);
+                lastInstruction = text;
+            } else if (callback) {
+                callback(); // Run callback immediately if no new text
+            }
+        }
+
+        // --- 2. MICROPHONE INPUT ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false; 
+        recognition.interimResults = false;
+        recognition.lang = 'en-ZA';
+
+        recognition.onresult = (event) => {
+            const command = event.results[0][0].transcript.trim();
+            console.log("User said:", command);
+            statusText.innerText = `You said: ${command}`;
+            voicePayload = command; 
+            overlay.style.display = 'none'; 
+            
+            // INTERACTIVE UPGRADE: Acknowledge the user's voice, then instantly process
+            speak(`Heard ${command}. Processing.`, () => {
+                sendFrameToServer(); // Instantly push to Flask!
+            });
+        };
+
+        recognition.onerror = (event) => {
+            statusText.innerText = "Didn't catch that. Tap again to speak.";
+            overlay.style.display = 'none';
+            speak("I didn't catch that. Please tap the screen to try again.");
+        };
+
+        // Trigger the mic when user taps the screen
+        document.body.addEventListener('click', () => {
+            if (cameraActive) {
+                overlay.style.display = 'flex';
+                overlay.innerHTML = '<h2 style="color:lime;">Listening... Speak now</h2>';
+                
+                // Let the AI say "Listening" BEFORE opening the mic so it doesn't hear itself
+                speak("Listening", () => {
+                    try { recognition.start(); } catch(e){}
+                });
+            }
+        });
+
+        // --- 3. SYSTEM LAUNCHER ---
+        startBtn.addEventListener('click', async (e) => {
+            e.stopPropagation(); 
+            
+            speak("System started. Point the camera at the screen.");
+            
+            overlay.style.display = 'none';
+            video.hidden = false;
+            statusText.hidden = false;
+            statusText.innerText = "System Active. Point camera at ATM.";
+            cameraActive = true;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                
+                // Keep the background loop running for hand guidance
+                setInterval(sendFrameToServer, 1200); 
+            } catch (err) {
+                statusText.innerText = "Camera access denied.";
+            }
+        });
+
+        // --- 4. BACKEND COMMUNICATION ---
+        async function sendFrameToServer() {
+            if (isProcessing || !cameraActive) return;
+            isProcessing = true;
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            canvas.toBlob(async (blob) => {
+                const formData = new FormData();
+                formData.append('image', blob, 'frame.jpg');
+
+                if (voicePayload !== "") {
+                    formData.append('target', voicePayload);
+                    voicePayload = ""; 
+                }
+
+                try {
+                    const response = await fetch('/analyze', { method: 'POST', body: formData });
+                    const data = await response.json();
+                    
+                    if (data.instruction) {
+                        statusText.innerText = data.instruction;
+                        // Read out the server's instructions
+                        speak(data.instruction);
+                    }
+                } catch (error) {
+                    console.error("Server error:", error);
+                } finally {
+                    isProcessing = false;
+                }
+            }, 'image/jpeg', 0.8);
+        }
+    </script>
+</body>
+</html>
